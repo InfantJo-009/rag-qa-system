@@ -289,23 +289,60 @@ with st.sidebar:
 
 def load_pdf(uploaded_file) -> list:
     """
-    Save the uploaded PDF to a temp file, then use LangChain's PyPDFLoader
-    to extract text page-by-page.
+    Extract text from a PDF using two strategies:
+      1. pdfplumber  — handles most modern PDFs (IEEE, research papers, etc.)
+      2. PyPDFLoader — fallback for simple PDFs
+
+    If both strategies extract very little text (< 100 chars per page on average),
+    the PDF is likely scanned/image-based and needs OCR, which is flagged to the user.
 
     Returns:
         A list of LangChain Document objects (one per page).
     """
-    # Streamlit's UploadedFile is in-memory; PyPDFLoader needs a file path,
-    # so we write it to a temporary file first.
+    from langchain_core.documents import Document
+
+    # Write uploaded bytes to a temp file (required for file-based loaders)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(uploaded_file.read())
         tmp_path = tmp.name
 
-    loader = PyPDFLoader(tmp_path)
-    pages = loader.load()
+    pages = []
 
-    # Clean up the temp file
+    # ── Strategy 1: pdfplumber (best for research papers, IEEE, etc.) ──────
+    try:
+        import pdfplumber
+        with pdfplumber.open(tmp_path) as pdf:
+            for i, page in enumerate(pdf.pages):
+                text = page.extract_text() or ""
+                # pdfplumber sometimes returns None — default to empty string
+                pages.append(Document(
+                    page_content=text,
+                    metadata={"page": i, "source": uploaded_file.name}
+                ))
+    except Exception:
+        pages = []  # pdfplumber failed — fall through to strategy 2
+
+    # ── Strategy 2: PyPDFLoader fallback ────────────────────────────────────
+    if not pages or sum(len(p.page_content) for p in pages) < 50:
+        try:
+            loader = PyPDFLoader(tmp_path)
+            pages = loader.load()
+        except Exception as e:
+            os.unlink(tmp_path)
+            raise RuntimeError(f"Could not read PDF: {e}")
+
     os.unlink(tmp_path)
+
+    # ── Scanned PDF detection ────────────────────────────────────────────────
+    total_chars = sum(len(p.page_content.strip()) for p in pages)
+    avg_chars_per_page = total_chars / max(len(pages), 1)
+
+    if avg_chars_per_page < 100:
+        st.warning(
+            f"Low text detected ({total_chars} total characters across {len(pages)} page(s)). "
+            "This PDF may be scanned or image-based. Extractable text is very limited — "
+            "answers may be inaccurate. Consider using a text-based PDF."
+        )
 
     return pages
 
@@ -444,12 +481,14 @@ with col_upload:
                 vector_store = create_vector_store(chunks, api_key)
 
             # Store results in session state so they persist across reruns
+            total_words = sum(len(p.page_content.split()) for p in pages)
             st.session_state["vector_store"] = vector_store
             st.session_state["chunks"] = chunks
             st.session_state["num_pages"] = len(pages)
             st.session_state["file_name"] = uploaded_file.name
+            st.session_state["total_words"] = total_words
 
-            st.success("Document processed successfully!")
+            st.success(f"Document processed successfully! ({total_words:,} words extracted)")
 
         except Exception as e:
             st.error(f"Error processing document: {str(e)}")
@@ -457,13 +496,15 @@ with col_upload:
     # ── Show document stats ─────────────────────────────────────────────
     if "chunks" in st.session_state:
         st.markdown('<div class="glass-card"><h3>Document Stats</h3>', unsafe_allow_html=True)
-        stat_cols = st.columns(3)
+        stat_cols = st.columns(4)
         with stat_cols[0]:
             st.metric("Pages", st.session_state["num_pages"])
         with stat_cols[1]:
             st.metric("Chunks", len(st.session_state["chunks"]))
         with stat_cols[2]:
-            st.metric("File", st.session_state["file_name"][:15])
+            st.metric("Words", f"{st.session_state.get('total_words', 0):,}")
+        with stat_cols[3]:
+            st.metric("File", st.session_state["file_name"][:12])
         st.markdown(
             '<span class="status-badge badge-success">Ready for questions</span>',
             unsafe_allow_html=True,
