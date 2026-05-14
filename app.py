@@ -219,22 +219,18 @@ st.markdown("""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. SIDEBAR – API KEY & SETTINGS
-#    The OpenAI API key is entered via the sidebar so it stays out of
-#    the main content area. It is stored in Streamlit's session state.
+# 4. SIDEBAR – SETTINGS
+#    API key is loaded silently from Streamlit Secrets (never shown in UI).
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Load API key securely — from Streamlit Secrets (deployed) or .env (local)
+try:
+    api_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
+except Exception:
+    api_key = os.environ.get("GROQ_API_KEY", "")
+
 with st.sidebar:
-    st.markdown("## Configuration")
-    st.markdown("---")
-
-    # ---------- API Key Loading ----------
-    # Securely load the API key from Streamlit Secrets or Environment Variables.
-    # This prevents the key from being shown in the UI.
-    try:
-        api_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
-    except Exception:
-        api_key = os.environ.get("GROQ_API_KEY", "")
-
+    st.markdown("## Settings")
     st.markdown("---")
 
     # ---------- Advanced Settings ----------
